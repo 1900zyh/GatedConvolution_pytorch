@@ -4,401 +4,310 @@ from torch.nn import init
 import torch.nn.functional as F
 import numpy as np
 from torch.autograd import Variable
+from core.spectral_norm import use_spectral_norm
 
 
-def init_weights(net, init_type='normal', gain=0.02):
-  def init_func(m):
-    classname = m.__class__.__name__
-    if hasattr(m, 'weight') and (classname.find('Conv') != -1 or classname.find('Linear') != -1):
-      if init_type == 'normal':
-        init.normal(m.weight.data, 0.0, gain)
-      elif init_type == 'xavier':
-        init.xavier_normal(m.weight.data, gain=gain)
-      elif init_type == 'kaiming':
-        init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
-      elif init_type == 'orthogonal':
-        init.orthogonal(m.weight.data, gain=gain)
-      else:
-        raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
-      if hasattr(m, 'bias') and m.bias is not None:
-        init.constant(m.bias.data, 0.0)
-    elif classname.find('BatchNorm2d') != -1:
-      init.normal(m.weight.data, 1.0, gain)
-      init.constant(m.bias.data, 0.0)
-  print('initialize network with %s' % init_type)
-  net.apply(init_func)
+class BaseNetwork(nn.Module):
+  def __init__(self):
+    super(BaseNetwork, self).__init__()
+  
+  def print_network(self):
+    if isinstance(self, list):
+      self = self[0]
+    num_params = 0
+    for param in self.parameters():
+      num_params += param.numel()
+    print('Network [%s] was created. Total number of parameters: %.1f million. '
+          'To see the architecture, do print(network).'% (type(self).__name__, num_params / 1000000))
+
+  def init_weights(self, init_type='normal', gain=0.02):
+    '''
+    initialize network's weights
+    init_type: normal | xavier | kaiming | orthogonal
+    https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/9451e70673400885567d08a9e97ade2524c700d0/models/networks.py#L39
+    '''
+    def init_func(m):
+      classname = m.__class__.__name__
+      if classname.find('InstanceNorm2d') != -1:
+        if hasattr(m, 'weight') and m.weight is not None:
+          nn.init.constant_(m.weight.data, 1.0)
+        if hasattr(m, 'bias') and m.bias is not None:
+          nn.init.constant_(m.bias.data, 0.0)
+      elif hasattr(m, 'weight') and (classname.find('Conv') != -1 or classname.find('Linear') != -1):
+        if init_type == 'normal':
+          nn.init.normal_(m.weight.data, 0.0, gain)
+        elif init_type == 'xavier':
+          nn.init.xavier_normal_(m.weight.data, gain=gain)
+        elif init_type == 'xavier_uniform':
+          nn.init.xavier_uniform_(m.weight.data, gain=1.0)
+        elif init_type == 'kaiming':
+          nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
+        elif init_type == 'orthogonal':
+          nn.init.orthogonal_(m.weight.data, gain=gain)
+        elif init_type == 'none':  # uses pytorch's default init method
+          m.reset_parameters()
+        else:
+          raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
+        if hasattr(m, 'bias') and m.bias is not None:
+          nn.init.constant_(m.bias.data, 0.0)
+    self.apply(init_func)
+    # propagate to children
+    for m in self.children():
+      if hasattr(m, 'init_weights'):
+        m.init_weights(init_type, gain)
+
 
 def get_pad(in_,  ksize, stride, atrous=1):
   out_ = np.ceil(float(in_)/stride)
   return int(((out_ - 1) * stride + atrous*(ksize-1) + 1 - in_)/2)
 
+def same_padding(images, ksizes, strides, rates):
+    assert len(images.size()) == 4
+    batch_size, channel, rows, cols = images.size()
+    out_rows = (rows + strides[0] - 1) // strides[0]
+    out_cols = (cols + strides[1] - 1) // strides[1]
+    effective_k_row = (ksizes[0] - 1) * rates[0] + 1
+    effective_k_col = (ksizes[1] - 1) * rates[1] + 1
+    padding_rows = max(0, (out_rows-1)*strides[0]+effective_k_row-rows)
+    padding_cols = max(0, (out_cols-1)*strides[1]+effective_k_col-cols)
+    # Pad the input
+    padding_top = int(padding_rows / 2.)
+    padding_left = int(padding_cols / 2.)
+    padding_bottom = padding_rows - padding_top
+    padding_right = padding_cols - padding_left
+    paddings = (padding_left, padding_right, padding_top, padding_bottom)
+    images = torch.nn.ZeroPad2d(paddings)(images)
+    return images
 
-class GatedConv2dWithActivation(torch.nn.Module):
-  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,batch_norm=True, activation=torch.nn.LeakyReLU(0.2, inplace=True)):
-    super(GatedConv2dWithActivation, self).__init__()
-    self.batch_norm = batch_norm
+class GatedConv(torch.nn.Module):
+  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, activation=nn.LeakyReLU(0.2, inplace=True)):
+    super(GatedConv, self).__init__()
     self.activation = activation
-    self.conv2d = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-    self.mask_conv2d = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-    self.batch_norm2d = torch.nn.BatchNorm2d(out_channels)
-    self.sigmoid = torch.nn.Sigmoid()
-    for m in self.modules():
-      if isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m.weight)
-
-  def gated(self, mask):
-    #return torch.clamp(mask, -1, 1)
-    return self.sigmoid(mask)
-
-  def forward(self, input):
-    x = self.conv2d(input)
-    mask = self.mask_conv2d(input)
-    if self.activation is not None:
-      x = self.activation(x) * self.gated(mask)
+    if out_channels == 3 or activation is None:
+      self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation)
     else:
-      x = x * self.gated(mask)
-    if self.batch_norm:
-      return self.batch_norm2d(x)
+      self.conv = nn.Conv2d(in_channels, out_channels//2, kernel_size, stride, padding, dilation)
+      self.gating = nn.Conv2d(in_channels, out_channels//2, kernel_size, stride, padding, dilation)
+      self.sigmoid = nn.Sigmoid()
+
+  def forward(self, x):
+    if self.activation is None:
+      return self.conv(x)
     else:
-      return x
+      return self.activation(self.conv(x)) * self.sigmoid(self.gating(x))
 
 
-class GatedDeConv2dWithActivation(torch.nn.Module):
-  def __init__(self, scale_factor, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, 
-               groups=1, bias=True, batch_norm=True,activation=torch.nn.LeakyReLU(0.2, inplace=True)):
-    super(GatedDeConv2dWithActivation, self).__init__()
-    self.conv2d = GatedConv2dWithActivation(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, batch_norm, activation)
+class GatedDeConv(torch.nn.Module):
+  def __init__(self, in_channels, out_channels, kernel_size, scale_factor=2, stride=1, padding=0, dilation=1, 
+               activation=torch.nn.LeakyReLU(0.2, inplace=True)):
+    super(GatedDeConv, self).__init__()
+    self.conv2d = GatedConv(in_channels, out_channels, kernel_size, stride, padding, dilation, activation)
     self.scale_factor = scale_factor
 
   def forward(self, input):
-    #print(input.size())
-    x = F.interpolate(input, scale_factor=2)
+    x = F.interpolate(input, scale_factor=self.scale_factor)
     return self.conv2d(x)
 
 
-class SNGatedConv2dWithActivation(torch.nn.Module):
-  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, batch_norm=True, activation=torch.nn.LeakyReLU(0.2, inplace=True)):
-    super(SNGatedConv2dWithActivation, self).__init__()
-    self.conv2d = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-    self.mask_conv2d = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-    self.activation = activation
-    self.batch_norm = batch_norm
-    self.batch_norm2d = torch.nn.BatchNorm2d(out_channels)
-    self.sigmoid = torch.nn.Sigmoid()
-    self.conv2d = torch.nn.utils.spectral_norm(self.conv2d)
-    self.mask_conv2d = torch.nn.utils.spectral_norm(self.mask_conv2d)
-    for m in self.modules():
-      if isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m.weight)
+class ContextualAttention(nn.Module):
+  def __init__(self, ksize=3, stride=1, rate=2, softmax_scale=10., fuse_k=3):
+    super(ContextualAttention, self).__init__()
+    self.ksize = ksize
+    self.stride = stride
+    self.rate = rate 
+    self.fuse_k = fuse_k
+    self.softmax_scale = softmax_scale
+    
+  def forward(self, x1, x2, mask=None):
+    # get shapes
+    x1s = list(x1.size())
 
-  def gated(self, mask):
-    return self.sigmoid(mask)
+    # extract patches from low-level feature maps x1 with stride and rate
+    kernel = 2*self.rate
+    raw_w = extract_patches(x1, kernel=kernel, stride=self.rate*self.stride)
+    raw_w = raw_w.contiguous().view(x1s[0], -1, x1s[1], kernel, kernel) # B*HW*C*K*K 
+    raw_w_groups = torch.split(raw_w, 1, dim=0) 
 
-  def forward(self, input):
-    x = self.conv2d(input)
-    mask = self.mask_conv2d(input)
-    if self.activation is not None:
-      x = self.activation(x) * self.gated(mask)
+    # split high-level feature maps x2 for matching 
+    x2 = F.interpolate(x2, scale_factor=1./2, mode='nearest')
+    x2s = list(x2.size())
+    f_groups = torch.split(x2, 1, dim=0) 
+    # extract patches from x2 as weights of filter
+    w = extract_patches(x2, kernel=self.ksize, stride=self.stride)
+    w = w.contiguous().view(x2s[0], -1, x2s[1], self.ksize, self.ksize) # B*HW*C*K*K
+    w_groups = torch.split(w, 1, dim=0) 
+
+    # process mask
+    if mask is not None:
+      mask = F.interpolate(mask, size=x2s[2:4], mode='bilinear', align_corners=True)
     else:
-      x = x * self.gated(mask)
-    if self.batch_norm:
-      return self.batch_norm2d(x)
-    else:
-      return x
+      mask = torch.zeros([1, 1, x2s[2], x2s[3]])
+      if torch.cuda.is_available():
+        mask = mask.cuda()
+    # extract patches from masks to mask out hole-patches for matching 
+    m = extract_patches(mask, kernel=self.ksize, stride=self.stride)
+    m = m.contiguous().view(x2s[0], -1, 1, self.ksize, self.ksize)  # B*HW*1*K*K
+    m = m.mean([2,3,4]).unsqueeze(-1).unsqueeze(-1)
+    mm = m.eq(0.).float() # (B, HW, 1, 1)       
+    mm_groups = torch.split(mm, 1, dim=0)
 
-class SNGatedDeConv2dWithActivation(torch.nn.Module):
-  def __init__(self, scale_factor, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, 
-              groups=1, bias=True, batch_norm=True, activation=torch.nn.LeakyReLU(0.2, inplace=True)):
-    super(SNGatedDeConv2dWithActivation, self).__init__()
-    self.conv2d = SNGatedConv2dWithActivation(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, batch_norm, activation)
-    self.scale_factor = scale_factor
+    y = []
+    scale = self.softmax_scale
+    padding = 0 if self.ksize==1 else 1
+    k = self.fuse_k 
+    fuse_weight = torch.eye(k).view(1,1,k,k)
+    if torch.cuda.is_available():
+      fuse_weight = fuse_weight.cuda()
+    for xi, wi, raw_wi, mi in zip(f_groups, w_groups, raw_w_groups, mm_groups):
+      wi = wi[0]
+      escape_NaN = torch.FloatTensor([1e-4])
+      if torch.cuda.is_available():
+        escape_NaN = escape_NaN.cuda()
+      wi_normed = wi / torch.max(torch.sqrt((wi*wi).sum([1,2,3],keepdim=True)), escape_NaN)
+      yi = F.conv2d(xi, wi_normed, stride=1, padding=padding)
 
-  def forward(self, input):
-    x = F.interpolate(input, scale_factor=2)
-    return self.conv2d(x)
+      # fuse 
+      yi = yi.view(1, 1, x2[2]*x2[3], x2[2]*x2[3])  # (B=1, I=1, H=32*32, W=32*32)
+      yi = same_padding(yi, [k, k], [1, 1], [1, 1])
+      yi = F.conv2d(yi, fuse_weight, stride=1)  # (B=1, C=1, H=32*32, W=32*32)
+      yi = yi.contiguous().view(1, x2[2], x2[3], x2[2], x2[3])  # (B=1, 32, 32, 32, 32)
+      yi = yi.permute(0, 2, 1, 4, 3)
+      yi = yi.contiguous().view(1, 1, x2[2]*x2[3], x2[2]*x2[3])
+      yi = same_padding(yi, [k, k], [1, 1], [1, 1])
+      yi = F.conv2d(yi, fuse_weight, stride=1)
+      yi = yi.contiguous().view(1, x2[3], x2[2], x2[3], x2[2])
+      yi = yi.permute(0, 2, 1, 4, 3).contiguous()
 
-class SNConvWithActivation(torch.nn.Module):
-  """
-  SN convolution for spetral normalization conv
-  """
-  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, activation=torch.nn.LeakyReLU(0.2, inplace=True)):
-      super(SNConvWithActivation, self).__init__()
-      self.conv2d = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-      self.conv2d = torch.nn.utils.spectral_norm(self.conv2d)
-      self.activation = activation
-      for m in self.modules():
-          if isinstance(m, nn.Conv2d):
-              nn.init.kaiming_normal_(m.weight)
-  def forward(self, input):
-      x = self.conv2d(input)
-      if self.activation is not None:
-          return self.activation(x)
-      else:
-          return x
+      # apply softmax to obtain 
+      yi = yi.contiguous().view(1, x2s[2]//self.stride*x2s[3]//self.stride, x2s[2], x2s[3]) 
+      yi = yi * mi 
+      yi = F.softmax(yi*scale, dim=1)
+      yi = yi * mi
+      yi = yi.clamp(min=1e-8)
 
-
-
-class Self_Attn(nn.Module):
-    """ Self attention Layer"""
-    def __init__(self,in_dim,activation,with_attn=False):
-        super(Self_Attn,self).__init__()
-        self.chanel_in = in_dim
-        self.activation = activation
-        self.with_attn = with_attn
-        self.query_conv = nn.Conv2d(in_channels = in_dim , out_channels = in_dim//8 , kernel_size= 1)
-        self.key_conv = nn.Conv2d(in_channels = in_dim , out_channels = in_dim//8 , kernel_size= 1)
-        self.value_conv = nn.Conv2d(in_channels = in_dim , out_channels = in_dim , kernel_size= 1)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-        self.softmax  = nn.Softmax(dim=-1) #
-    def forward(self,x):
-        """
-            inputs :
-                x : input feature maps( B X C X W X H)
-            returns :
-                out : self attention value + input feature
-                attention: B X N X N (N is Width*Height)
-        """
-        m_batchsize,C,width ,height = x.size()
-        proj_query  = self.query_conv(x).view(m_batchsize,-1,width*height).permute(0,2,1) # B X CX(N)
-        proj_key =  self.key_conv(x).view(m_batchsize,-1,width*height) # B X C x (*W*H)
-        energy =  torch.bmm(proj_query,proj_key) # transpose check
-        attention = self.softmax(energy) # BX (N) X (N)
-        proj_value = self.value_conv(x).view(m_batchsize,-1,width*height) # B X C X N
-
-        out = torch.bmm(proj_value,attention.permute(0,2,1) )
-        out = out.view(m_batchsize,C,width,height)
-
-        out = self.gamma*out + x
-        if self.with_attn:
-            return out ,attention
-        else:
-            return out
-
-class SAGenerator(nn.Module):
-    """Generator."""
-
-    def __init__(self, batch_size, image_size=64, z_dim=100, conv_dim=64):
-        super(Generator, self).__init__()
-        self.imsize = image_size
-        layer1 = []
-        layer2 = []
-        layer3 = []
-        last = []
-
-        repeat_num = int(np.log2(self.imsize)) - 3
-        mult = 2 ** repeat_num # 8
-        layer1.append(SpectralNorm(nn.ConvTranspose2d(z_dim, conv_dim * mult, 4)))
-        layer1.append(nn.BatchNorm2d(conv_dim * mult))
-        layer1.append(nn.ReLU())
-
-        curr_dim = conv_dim * mult
-
-        layer2.append(SpectralNorm(nn.ConvTranspose2d(curr_dim, int(curr_dim / 2), 4, 2, 1)))
-        layer2.append(nn.BatchNorm2d(int(curr_dim / 2)))
-        layer2.append(nn.ReLU())
-
-        curr_dim = int(curr_dim / 2)
-
-        layer3.append(SpectralNorm(nn.ConvTranspose2d(curr_dim, int(curr_dim / 2), 4, 2, 1)))
-        layer3.append(nn.BatchNorm2d(int(curr_dim / 2)))
-        layer3.append(nn.ReLU())
-
-        if self.imsize == 64:
-            layer4 = []
-            curr_dim = int(curr_dim / 2)
-            layer4.append(SpectralNorm(nn.ConvTranspose2d(curr_dim, int(curr_dim / 2), 4, 2, 1)))
-            layer4.append(nn.BatchNorm2d(int(curr_dim / 2)))
-            layer4.append(nn.ReLU())
-            self.l4 = nn.Sequential(*layer4)
-            curr_dim = int(curr_dim / 2)
-
-        self.l1 = nn.Sequential(*layer1)
-        self.l2 = nn.Sequential(*layer2)
-        self.l3 = nn.Sequential(*layer3)
-
-        last.append(nn.ConvTranspose2d(curr_dim, 3, 4, 2, 1))
-        last.append(nn.Tanh())
-        self.last = nn.Sequential(*last)
-
-        self.attn1 = Self_Attn( 128, 'relu')
-        self.attn2 = Self_Attn( 64,  'relu')
-
-    def forward(self, z):
-        z = z.view(z.size(0), z.size(1), 1, 1)
-        out=self.l1(z)
-        out=self.l2(out)
-        out=self.l3(out)
-        out,p1 = self.attn1(out)
-        out=self.l4(out)
-        out,p2 = self.attn2(out)
-        out=self.last(out)
-
-        return out, p1, p2
-
-class InpaintSANet(torch.nn.Module):
-    """
-    Inpaint generator, input should be 5*256*256, where 3*256*256 is the masked image, 1*256*256 for mask, 1*256*256 is the guidence
-    """
-    def __init__(self, n_in_channel=5):
-        super(InpaintSANet, self).__init__()
-        cnum = 32
-        self.coarse_net = nn.Sequential(
-            #input is 5*256*256, but it is full convolution network, so it can be larger than 256
-            GatedConv2dWithActivation(n_in_channel, cnum, 5, 1, padding=get_pad(256, 5, 1)),
-            # downsample 128
-            GatedConv2dWithActivation(cnum, 2*cnum, 4, 2, padding=get_pad(256, 4, 2)),
-            GatedConv2dWithActivation(2*cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            #downsample to 64
-            GatedConv2dWithActivation(2*cnum, 4*cnum, 4, 2, padding=get_pad(128, 4, 2)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            # atrous convlution
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=2, padding=get_pad(64, 3, 1, 2)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=4, padding=get_pad(64, 3, 1, 4)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=8, padding=get_pad(64, 3, 1, 8)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=16, padding=get_pad(64, 3, 1, 16)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            #Self_Attn(4*cnum, 'relu'),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            # upsample
-            GatedDeConv2dWithActivation(2, 4*cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            #Self_Attn(2*cnum, 'relu'),
-            GatedConv2dWithActivation(2*cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            GatedDeConv2dWithActivation(2, 2*cnum, cnum, 3, 1, padding=get_pad(256, 3, 1)),
-
-            GatedConv2dWithActivation(cnum, cnum//2, 3, 1, padding=get_pad(256, 3, 1)),
-            #Self_Attn(cnum//2, 'relu'),
-            GatedConv2dWithActivation(cnum//2, 3, 3, 1, padding=get_pad(128, 3, 1), activation=None)
-        )
-
-        self.refine_conv_net = nn.Sequential(
-            # input is 5*256*256
-            GatedConv2dWithActivation(n_in_channel, cnum, 5, 1, padding=get_pad(256, 5, 1)),
-            # downsample
-            GatedConv2dWithActivation(cnum, cnum, 4, 2, padding=get_pad(256, 4, 2)),
-            GatedConv2dWithActivation(cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            # downsample
-            GatedConv2dWithActivation(2*cnum, 2*cnum, 4, 2, padding=get_pad(128, 4, 2)),
-            GatedConv2dWithActivation(2*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=2, padding=get_pad(64, 3, 1, 2)),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=4, padding=get_pad(64, 3, 1, 4)),
-            #Self_Attn(4*cnum, 'relu'),
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=8, padding=get_pad(64, 3, 1, 8)),
-
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, dilation=16, padding=get_pad(64, 3, 1, 16))
-        )
-        self.refine_attn = Self_Attn(4*cnum, 'relu', with_attn=False)
-        self.refine_upsample_net = nn.Sequential(
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-
-            GatedConv2dWithActivation(4*cnum, 4*cnum, 3, 1, padding=get_pad(64, 3, 1)),
-            GatedDeConv2dWithActivation(2, 4*cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            GatedConv2dWithActivation(2*cnum, 2*cnum, 3, 1, padding=get_pad(128, 3, 1)),
-            GatedDeConv2dWithActivation(2, 2*cnum, cnum, 3, 1, padding=get_pad(256, 3, 1)),
-
-            GatedConv2dWithActivation(cnum, cnum//2, 3, 1, padding=get_pad(256, 3, 1)),
-            #Self_Attn(cnum, 'relu'),
-            GatedConv2dWithActivation(cnum//2, 3, 3, 1, padding=get_pad(256, 3, 1), activation=None),
-        )
+      # attending 
+      wi_center = raw_wi[0]
+      yi = F.conv_transpose2d(yi, wi_center, stride=self.rate, padding=1) / 4.
+      y.append(yi)
+    y = torch.cat(y, dim=0)
+    y.contiguous().view(x1s)
+    # adjust after filling 
+    if self.fuse:
+      tmp = []
+      for i in range(self.groups):
+        tmp.append(self.__getattr__('conv{}'.format(str(i).zfill(2)))(y))
+      y = torch.cat(tmp, dim=1)
+    return y
 
 
-    def forward(self, imgs, masks, img_exs=None):
-        # Coarse
-        masked_imgs =  imgs * (1 - masks) + masks
-        if img_exs == None:
-            input_imgs = torch.cat([masked_imgs, masks, torch.full_like(masks, 1.)], dim=1)
-        else:
-            input_imgs = torch.cat([masked_imgs, img_exs, masks, torch.full_like(masks, 1.)], dim=1)
-        #print(input_imgs.size(), imgs.size(), masks.size())
-        x = self.coarse_net(input_imgs)
-        x = torch.clamp(x, -1., 1.)
-        coarse_x = x
-        # Refine
-        masked_imgs = imgs * (1 - masks) + coarse_x * masks
-        if img_exs is None:
-            input_imgs = torch.cat([masked_imgs, masks, torch.full_like(masks, 1.)], dim=1)
-        else:
-            input_imgs = torch.cat([masked_imgs, img_exs, masks, torch.full_like(masks, 1.)], dim=1)
-        x = self.refine_conv_net(input_imgs)
-        x= self.refine_attn(x)
-        #print(x.size(), attention.size())
-        x = self.refine_upsample_net(x)
-        x = torch.clamp(x, -1., 1.)
-        return coarse_x, x
-
-class InpaintSADirciminator(nn.Module):
-    def __init__(self):
-        super(InpaintSADirciminator, self).__init__()
-        cnum = 32
-        self.discriminator_net = nn.Sequential(
-            SNConvWithActivation(5, 2*cnum, 4, 2, padding=get_pad(256, 5, 2)),
-            SNConvWithActivation(2*cnum, 4*cnum, 4, 2, padding=get_pad(128, 5, 2)),
-            SNConvWithActivation(4*cnum, 8*cnum, 4, 2, padding=get_pad(64, 5, 2)),
-            SNConvWithActivation(8*cnum, 8*cnum, 4, 2, padding=get_pad(32, 5, 2)),
-            SNConvWithActivation(8*cnum, 8*cnum, 4, 2, padding=get_pad(16, 5, 2)),
-            SNConvWithActivation(8*cnum, 8*cnum, 4, 2, padding=get_pad(8, 5, 2)),
-            Self_Attn(8*cnum, 'relu'),
-            SNConvWithActivation(8*cnum, 8*cnum, 4, 2, padding=get_pad(4, 5, 2)),
-        )
-        self.linear = nn.Linear(8*cnum*2*2, 1)
-
-    def forward(self, input):
-        x = self.discriminator_net(input)
-        x = x.view((x.size(0),-1))
-        #x = self.linear(x)
-        return x
+# extract patches
+def extract_patches(x, kernel=3, stride=1):
+  if kernel != 1:
+    x = nn.ZeroPad2d(1)(x)
+  x = x.permute(0, 2, 3, 1)
+  all_patches = x.unfold(1, kernel, stride).unfold(2, kernel, stride)
+  return all_patches
 
 
-class SADiscriminator(nn.Module):
-    """Discriminator, Auxiliary Classifier."""
+class InpaintGenerator(nn.Module):
+  def __init__(self, ncin=5):
+    super(InpaintGenerator, self).__init__()
+    cnum = 48
+    self.coarse_net = nn.Sequential(
+      GatedConv(ncin, cnum, 5, 1),
+      GatedConv(cnum, 2*cnum, 3, 2),
+      GatedConv(2*cnum, 2*cnum, 3, 1),
+      GatedConv(2*cnum, 4*cnum, 3, 2),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=2),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=4),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=8),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=16),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedDeConv(4*cnum, 2*cnum, 3, 1),
+      GatedConv(2*cnum, 2*cnum, 3, 1),
+      GatedDeConv(2*cnum, cnum, 3, 1),
+      GatedConv(cnum, cnum//2, 3, 1),
+      GatedConv(cnum//2, 3, 3, 1, activation=None),
+      nn.Tanh()
+    )
 
-    def __init__(self, batch_size=64, image_size=64, conv_dim=64):
-        super(Discriminator, self).__init__()
-        self.imsize = image_size
-        layer1 = []
-        layer2 = []
-        layer3 = []
-        last = []
+    self.refine_conv = nn.Sequential(
+      GatedConv(ncin, cnum, 5, 1),
+      GatedConv(cnum, 2*cnum, 3, 2),
+      GatedConv(2*cnum, 2*cnum, 3, 1),
+      GatedConv(2*cnum, 4*cnum, 3, 2),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=2),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=4),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=8),
+      GatedConv(4*cnum, 4*cnum, 3, 1, dilation=16),
+    )
 
-        layer1.append(SpectralNorm(nn.Conv2d(3, conv_dim, 4, 2, 1)))
-        layer1.append(nn.LeakyReLU(0.1))
+    self.refine_atn0 = nn.Sequential(
+      GatedConv(ncin, cnum, 5, 1),
+      GatedConv(cnum, 2*cnum, 3, 2),
+      GatedConv(2*cnum, 2*cnum, 3, 1),
+      GatedConv(2*cnum, 4*cnum, 3, 2),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1)
+    )
+    self.refine_atn1 = ContextualAttention()
+    self.refine_atn2 = nn.Sequential(
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+    )
 
-        curr_dim = conv_dim
+    self.refine_decoder = nn.Sequential(
+      GatedConv(8*cnum, 4*cnum, 3, 1),
+      GatedConv(4*cnum, 4*cnum, 3, 1),
+      GatedDeConv(4*cnum, 2*cnum, 3, 1),
+      GatedConv(2*cnum, 2*cnum, 3, 1),
+      GatedDeConv(2*cnum, cnum, 3, 1),
+      GatedConv(cnum, cnum//2, 3, 1),
+      GatedConv(cnum//2, 3, 3, 1, activation=None),
+      nn.Tanh()
+    )
 
-        layer2.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))
-        layer2.append(nn.LeakyReLU(0.1))
-        curr_dim = curr_dim * 2
+  def forward(self, x, masks):
+    inputs = torch.cat([x, masks, torch.full_like(masks, 1.)], dim=1)
+    coarse_x = self.coarse_net(inputs)
+    x = x * (1 - masks) + coarse_x * masks
+    inputs = torch.cat([x, masks, torch.full_like(masks, 1.)], dim=1)
+    x1 = self.refine_atn0(inputs)
+    x2 = self.refine_atn2(self.refine_atn1(inputs))
+    output = self.refine_decoder(torch.cat([x1, x2], di=1))
+    return coarse_x, output
 
-        layer3.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))
-        layer3.append(nn.LeakyReLU(0.1))
-        curr_dim = curr_dim * 2
 
-        if self.imsize == 64:
-            layer4 = []
-            layer4.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))
-            layer4.append(nn.LeakyReLU(0.1))
-            self.l4 = nn.Sequential(*layer4)
-            curr_dim = curr_dim*2
-        self.l1 = nn.Sequential(*layer1)
-        self.l2 = nn.Sequential(*layer2)
-        self.l3 = nn.Sequential(*layer3)
+class Discriminator(BaseNetwork):
+  def __init__(self, in_channels, use_sigmoid=False, use_sn=True, init_weights=True):
+    super(Discriminator, self).__init__()
+    self.use_sigmoid = use_sigmoid  
+    cnum = 64
+    self.conv = nn.Sequential(
+      use_spectral_norm(nn.Conv2d(in_channels=in_channels, out_channels=cnum, kernel_size=5, stride=2, padding=1, bias=not use_sn), use_sn),
+      nn.LeakyReLU(0.2, inplace=True),
+      use_spectral_norm(nn.Conv2d(in_channels=cnum, out_channels=cnum*2, kernel_size=5, stride=2, padding=1, bias=not use_sn), use_sn),
+      nn.LeakyReLU(0.2, inplace=True),
+      use_spectral_norm(nn.Conv2d(in_channels=cnum*2, out_channels=cnum*4, kernel_size=5, stride=2, padding=1, bias=not use_sn), use_sn),
+      nn.LeakyReLU(0.2, inplace=True),
+      use_spectral_norm(nn.Conv2d(in_channels=cnum*4, out_channels=cnum*4, kernel_size=5, stride=1, padding=1, bias=not use_sn), use_sn),
+      nn.LeakyReLU(0.2, inplace=True),
+      use_spectral_norm(nn.Conv2d(in_channels=cnum*4, out_channels=cnum*4, kernel_size=5, stride=1, padding=1, bias=not use_sn), use_sn),
+      nn.LeakyReLU(0.2, inplace=True),
+      use_spectral_norm(nn.Conv2d(in_channels=cnum*4, out_channels=cnum*4, kernel_size=5, stride=1, padding=1, bias=not use_sn), use_sn),
+    )
 
-        last.append(nn.Conv2d(curr_dim, 1, 4))
-        self.last = nn.Sequential(*last)
+    if init_weights:
+      self.init_weights()
+    
+  def forward(self, x):
+    x = self.conv(x)
+    if self.use_sigmoid:
+      x = torch.sigmoid(x)
+    return x
 
-        self.attn1 = Self_Attn(256, 'relu')
-        self.attn2 = Self_Attn(512, 'relu')
-
-    def forward(self, x):
-        out = self.l1(x)
-        out = self.l2(out)
-        out = self.l3(out)
-        out,p1 = self.attn1(out)
-        out=self.l4(out)
-        out,p2 = self.attn2(out)
-        out=self.last(out)
-
-        return out.squeeze(), p1, p2

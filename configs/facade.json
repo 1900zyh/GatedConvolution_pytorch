@@ -11,11 +11,9 @@
         "h": 256
     },
     "losses": {
-        "gan_type": "nsgan",
-        "hole_weight": 6,
-        "valid_weight": 1,
-        "pyramid_weight": 0.5,
-        "adversarial_weight": 0.1
+        "gan_type": "hinge",
+        "l1_weight": 1,
+        "adversarial_weight": 1
     },
     "trainer": {
         "type": "Adam",

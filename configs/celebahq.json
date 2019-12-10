@@ -7,15 +7,13 @@
         "flist_root": "../flist",
         "mask": "pconv",
         "extend": 5,
-        "w": 256,
-        "h": 256
+        "w": 512,
+        "h": 512
     },
     "losses": {
         "gan_type": "hinge",
-        "hole_weight": 6,
-        "valid_weight": 1,
-        "pyramid_weight": 0.5,
-        "adversarial_weight": 0.1
+        "l1_weight": 1,
+        "adversarial_weight": 1
     },
     "trainer": {
         "type": "Adam",

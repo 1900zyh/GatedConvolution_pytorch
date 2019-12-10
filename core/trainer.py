@@ -155,11 +155,10 @@ class Trainer():
       end = time.time()
       images, masks = set_device([images, masks])
       images_masked = (images * (1 - masks).float()) + masks
-      inputs = torch.cat((images_masked, masks), dim=1)
-      feats, pred_img = self.netG(inputs, masks)                        # in: [rgb(3) + edge(1)]
+      feats, pred_img = self.netG(images_masked, masks)                        # in: [rgb(3) + edge(1)]
       comp_img = (1 - masks)*images + masks*pred_img
-      self.add_summary(self.dis_writer, 'learning_rate', self.get_lr(type='D'))
-      self.add_summary(self.gen_writer, 'learning_rate', self.get_lr(type='G'))
+      self.add_summary(self.dis_writer, 'lr/dis_lr', self.get_lr(type='D'))
+      self.add_summary(self.gen_writer, 'lr/gen_lr', self.get_lr(type='G'))
 
       gen_loss = 0
       dis_loss = 0
@@ -181,18 +180,9 @@ class Trainer():
       self.add_summary(self.gen_writer, 'loss/gen_fake_loss', gen_fake_loss.item())
 
       # generator l1 loss
-      hole_loss = self.l1_loss(pred_img*masks, images*masks) / torch.mean(masks) 
-      gen_loss += hole_loss * self.config['losses']['hole_weight']
-      self.add_summary(self.gen_writer, 'loss/hole_loss', hole_loss.item())
-      valid_loss = self.l1_loss(pred_img*(1-masks), images*(1-masks)) / torch.mean(1-masks) 
-      gen_loss += valid_loss * self.config['losses']['valid_weight']
-      self.add_summary(self.gen_writer, 'loss/valid_loss', valid_loss.item())
-      if feats is not None:
-        pyramid_loss = 0 
-        for _, f in enumerate(feats):
-          pyramid_loss += self.l1_loss(f, F.interpolate(images, size=f.size()[2:4], mode='bilinear', align_corners=True))
-        gen_loss += pyramid_loss * self.config['losses']['pyramid_weight']
-        self.add_summary(self.gen_writer, 'loss/pyramid_loss', pyramid_loss.item())
+      gen_l1_loss = self.l1_loss(pred_img, images)
+      gen_loss += gen_l1_loss * self.config['losses']['l1_weight']
+      self.add_summary(self.gen_writer, 'loss/gen_l1_loss', gen_l1_loss.item())
 
       # generator backward
       self.optimG.zero_grad()
@@ -223,7 +213,7 @@ class Trainer():
   def _test_epoch(self, it):
     if self.config['global_rank'] == 0:
       print('[**] Testing in backend ...')
-      model_path = 'release_model/{}_{}'.format(self.config['model_name'], self.config['data_loader']['name'])
+      model_path = self.config['save_dir']
       result_path = '{}/results_{}_level_03'.format(model_path, str(it).zfill(5))
       log_path = os.path.join(model_path, 'valid.log')
       try: 

@@ -38,6 +38,7 @@ from core.dataset import Dataset
 
 parser = argparse.ArgumentParser(description="MGP")
 parser.add_argument("-c", "--config", type=str, required=True)
+parser.add_argument('-s', '--size', default=None, type=int)
 parser.add_argument("-l", "--level",  type=int, required=True)
 parser.add_argument("-n", "--model_name", type=str, required=True)
 parser.add_argument("-p", "--port", type=str, default="23451")
@@ -90,8 +91,10 @@ def main_worker(gpu, ngpus_per_node, config):
 if __name__ == '__main__':
   ngpus_per_node = torch.cuda.device_count()
   config = json.load(open(args.config))
-  config['save_dir'] = os.path.join(config['save_dir'], '{}_{}_{}'.format(
-    args.model_name, config['data_loader']['name'], config['data_loader']['mask']))
+  if args.size is not None:
+    config['data_loader']['w'] = config['data_loader']['h'] = args.size
+  config['save_dir'] = os.path.join(config['save_dir'], '{}_{}_{}{}'.format(
+    args.model_name, config['data_loader']['name'], config['data_loader']['mask'], config['data_loader']['w']))
 
   print('using {} GPUs for testing ... '.format(ngpus_per_node))
   # setup distributed parallel training environments

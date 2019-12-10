@@ -14,6 +14,7 @@ from core.trainer import Trainer
 
 parser = argparse.ArgumentParser(description="Pconv")
 parser.add_argument('-c', '--config', type=str, default=None, required=True)
+parser.add_argument('-s', '--size', default=None, type=int)
 parser.add_argument('-n', '--name', default='base', type=str)
 parser.add_argument('-m', '--mask', default='pconv', type=str)
 parser.add_argument('-p', '--port', default='23455', type=str)
@@ -35,8 +36,8 @@ def main_worker(gpu, ngpus_per_node, config):
     )
   set_seed(config['seed'])
 
-  config['save_dir'] = os.path.join(config['save_dir'], '{}_{}_{}'.format(
-    config['model_name'], config['data_loader']['name'], config['data_loader']['mask']))
+  config['save_dir'] = os.path.join(config['save_dir'], '{}_{}_{}{}'.format(
+    config['model_name'], config['data_loader']['name'], config['data_loader']['mask'], config['data_loader']['w']))
   if (not config['distributed']) or config['global_rank'] == 0:
     os.makedirs(config['save_dir'], exist_ok=True)
     print('[**] create folder {}'.format(config['save_dir']))
@@ -51,6 +52,8 @@ if __name__ == "__main__":
   
   # loading configs 
   config = json.load(open(args.config))
+  if args.size is not None:
+    config['data_loader']['w'] = config['data_loader']['h'] = args.size
   config['data_loader']['mask'] = args.mask
   config['model_name'] = args.name
   config['config'] = args.config
