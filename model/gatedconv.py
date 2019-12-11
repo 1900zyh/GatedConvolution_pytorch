@@ -167,15 +167,15 @@ class ContextualAttention(nn.Module):
       yi = F.conv2d(xi, wi_normed, stride=1, padding=padding)
 
       # fuse 
-      yi = yi.view(1, 1, x2[2]*x2[3], x2[2]*x2[3])  # (B=1, I=1, H=32*32, W=32*32)
+      yi = yi.view(1, 1, x2s[2]*x2s[3], x2s[2]*x2s[3])  # (B=1, I=1, H=32*32, W=32*32)
       yi = same_padding(yi, [k, k], [1, 1], [1, 1])
       yi = F.conv2d(yi, fuse_weight, stride=1)  # (B=1, C=1, H=32*32, W=32*32)
-      yi = yi.contiguous().view(1, x2[2], x2[3], x2[2], x2[3])  # (B=1, 32, 32, 32, 32)
+      yi = yi.contiguous().view(1, x2s[2], x2s[3], x2s[2], x2s[3])  # (B=1, 32, 32, 32, 32)
       yi = yi.permute(0, 2, 1, 4, 3)
-      yi = yi.contiguous().view(1, 1, x2[2]*x2[3], x2[2]*x2[3])
+      yi = yi.contiguous().view(1, 1, x2s[2]*x2s[3], x2s[2]*x2s[3])
       yi = same_padding(yi, [k, k], [1, 1], [1, 1])
       yi = F.conv2d(yi, fuse_weight, stride=1)
-      yi = yi.contiguous().view(1, x2[3], x2[2], x2[3], x2[2])
+      yi = yi.contiguous().view(1, x2s[3], x2s[2], x2s[3], x2s[2])
       yi = yi.permute(0, 2, 1, 4, 3).contiguous()
 
       # apply softmax to obtain 
