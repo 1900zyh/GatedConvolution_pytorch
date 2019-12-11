@@ -214,33 +214,33 @@ class InpaintGenerator(nn.Module):
     super(InpaintGenerator, self).__init__()
     cnum = 48
     self.coarse_net = nn.Sequential(
-      GatedConv(ncin, cnum, 5, 1, 2),
-      GatedConv(cnum//2, 2*cnum, 3, 2),
-      GatedConv(cnum, 2*cnum, 3, 1, 1),
-      GatedConv(cnum, 4*cnum, 3, 2),
-      GatedConv(2*cnum, 4*cnum, 3, 1, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1, 1),
+      GatedConv(ncin, cnum, 5, 1, padding=2),
+      GatedConv(cnum//2, 2*cnum, 3, 2, padding=1),
+      GatedConv(cnum, 2*cnum, 3, 1, padding=1),
+      GatedConv(cnum, 4*cnum, 3, 2, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=2, dilation=2),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=4, dilation=4),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=8, dilation=8),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=16, dilation=16),
-      GatedConv(2*cnum, 4*cnum, 3, 1, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1, 1),
-      GatedDeConv(2*cnum, 2*cnum, 3, 1),
-      GatedConv(cnum, 2*cnum, 3, 1, 1),
-      GatedDeConv(cnum, cnum, 3, 1),
-      GatedConv(cnum//2, cnum//2, 3, 1, 1),
-      GatedConv(cnum//4, 3, 3, 1, 1, activation=None),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedDeConv(2*cnum, 2*cnum, 3, padding=1),
+      GatedConv(cnum, 2*cnum, 3, 1, padding=1),
+      GatedDeConv(cnum, cnum, 3, padding=1),
+      GatedConv(cnum//2, cnum//2, 3, 1, padding=1),
+      GatedConv(cnum//4, 3, 3, 1, padding=1, activation=None),
       nn.Tanh()
     )
 
     self.refine_conv = nn.Sequential(
-      GatedConv(ncin, cnum, 5, 1),
-      GatedConv(cnum//2, 2*cnum, 3, 2),
-      GatedConv(cnum, 2*cnum, 3, 1),
-      GatedConv(cnum, 4*cnum, 3, 2),
-      GatedConv(2*cnum, 4*cnum, 3, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1),
+      GatedConv(ncin, cnum, 5, 1, padding=2),
+      GatedConv(cnum//2, 2*cnum, 3, 2, padding=1),
+      GatedConv(cnum, 2*cnum, 3, 1, padding=1),
+      GatedConv(cnum, 4*cnum, 3, 2, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=2, dilation=2),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=4, dilation=4),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=8, dilation=8),
@@ -248,27 +248,27 @@ class InpaintGenerator(nn.Module):
     )
 
     self.refine_atn0 = nn.Sequential(
-      GatedConv(ncin, cnum, 5, 1),
-      GatedConv(cnum//2, 2*cnum, 3, 2),
-      GatedConv(cnum, 2*cnum, 3, 1),
-      GatedConv(cnum, 4*cnum, 3, 2),
-      GatedConv(2*cnum, 4*cnum, 3, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1)
+      GatedConv(ncin, cnum, 5, 1, padding=2),
+      GatedConv(cnum//2, 2*cnum, 3, 2, padding=1),
+      GatedConv(cnum, 2*cnum, 3, 1, padding=1),
+      GatedConv(cnum, 4*cnum, 3, 2, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1)
     )
     self.refine_atn1 = ContextualAttention()
     self.refine_atn2 = nn.Sequential(
-      GatedConv(2*cnum, 4*cnum, 3, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
     )
 
     self.refine_decoder = nn.Sequential(
-      GatedConv(8*cnum, 4*cnum, 3, 1),
-      GatedConv(2*cnum, 4*cnum, 3, 1),
-      GatedDeConv(2*cnum, 2*cnum, 3, 1),
-      GatedConv(cnum, 2*cnum, 3, 1),
-      GatedDeConv(cnum, cnum, 3, 1),
-      GatedConv(cnum//2, cnum//2, 3, 1),
-      GatedConv(cnum//4, 3, 3, 1, activation=None),
+      GatedConv(8*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
+      GatedDeConv(2*cnum, 2*cnum, 3, 1, padding=1),
+      GatedConv(cnum, 2*cnum, 3, 1, padding=1),
+      GatedDeConv(cnum, cnum, 3, 1, padding=1),
+      GatedConv(cnum//2, cnum//2, 3, 1, padding=1),
+      GatedConv(cnum//4, 3, 3, 1, padding=1, activation=None),
       nn.Tanh()
     )
 
