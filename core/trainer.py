@@ -155,7 +155,7 @@ class Trainer():
       end = time.time()
       images, masks = set_device([images, masks])
       images_masked = (images * (1 - masks).float()) + masks
-      feats, pred_img = self.netG(images_masked, masks)                        # in: [rgb(3) + edge(1)]
+      coarse, pred_img = self.netG(images_masked, masks)                        # in: [rgb(3) + edge(1)]
       comp_img = (1 - masks)*images + masks*pred_img
       self.add_summary(self.dis_writer, 'lr/dis_lr', self.get_lr(type='D'))
       self.add_summary(self.gen_writer, 'lr/gen_lr', self.get_lr(type='G'))
@@ -183,6 +183,9 @@ class Trainer():
       gen_l1_loss = self.l1_loss(pred_img, images)
       gen_loss += gen_l1_loss * self.config['losses']['l1_weight']
       self.add_summary(self.gen_writer, 'loss/gen_l1_loss', gen_l1_loss.item())
+      gen_coarse = self.l1_loss(coarse, images)
+      gen_loss += gen_coarse * self.config['losses']['l1_weight']
+      self.add_summary(self.gen_writer, 'loss/gen_coarse', gen_coarse.item())
 
       # generator backward
       self.optimG.zero_grad()

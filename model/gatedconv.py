@@ -278,7 +278,8 @@ class InpaintGenerator(nn.Module):
     x = x * (1 - masks) + coarse_x * masks
     inputs = torch.cat([x, masks, torch.full_like(masks, 1.)], dim=1)
     x1 = self.refine_atn0(inputs)
-    x2 = self.refine_atn2(self.refine_atn1(inputs))
+    x2 = self.refine_atn1(inputs)
+    x2 = self.refine_atn2(x2, x2, masks)
     output = self.refine_decoder(torch.cat([x1, x2], di=1))
     return coarse_x, output
 
