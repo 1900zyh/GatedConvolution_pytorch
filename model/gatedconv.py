@@ -247,7 +247,7 @@ class InpaintGenerator(nn.Module):
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=16, dilation=16),
     )
 
-    self.refine_atn0 = nn.Sequential(
+    self.refine_atn1 = nn.Sequential(
       GatedConv(ncin, cnum, 5, 1, padding=2),
       GatedConv(cnum//2, 2*cnum, 3, 2, padding=1),
       GatedConv(cnum, 2*cnum, 3, 1, padding=1),
@@ -255,8 +255,8 @@ class InpaintGenerator(nn.Module):
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=1)
     )
-    self.refine_atn1 = ContextualAttention()
-    self.refine_atn2 = nn.Sequential(
+    self.refine_atn2 = ContextualAttention()
+    self.refine_atn3 = nn.Sequential(
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
     )
@@ -277,10 +277,11 @@ class InpaintGenerator(nn.Module):
     coarse_x = self.coarse_net(inputs)
     x = x * (1 - masks) + coarse_x * masks
     inputs = torch.cat([x, masks, torch.full_like(masks, 1.)], dim=1)
-    x1 = self.refine_atn0(inputs)
-    x2 = self.refine_atn1(inputs)
-    x2 = self.refine_atn2(x2, x2, masks)
-    output = self.refine_decoder(torch.cat([x1, x2], di=1))
+    conv_x = self.refine_conv(inputs)
+    atn_x1 = self.refine_atn1(inputs)
+    atn_x2 = self.refine_atn2(atn_x1, atn_x1, masks)
+    atn_x3 = self.refine_atn3(atn_x2)
+    output = self.refine_decoder(torch.cat([conv_x, atn_x3], dim=1))
     return coarse_x, output
 
 
