@@ -191,12 +191,6 @@ class ContextualAttention(nn.Module):
       y.append(yi)
     y = torch.cat(y, dim=0)
     y.contiguous().view(x1s)
-    # adjust after filling 
-    if self.fuse:
-      tmp = []
-      for i in range(self.groups):
-        tmp.append(self.__getattr__('conv{}'.format(str(i).zfill(2)))(y))
-      y = torch.cat(tmp, dim=1)
     return y
 
 
