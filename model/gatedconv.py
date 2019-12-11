@@ -80,7 +80,7 @@ def same_padding(images, ksizes, strides, rates):
     return images
 
 class GatedConv(torch.nn.Module):
-  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, activation=nn.LeakyReLU(0.2, inplace=True)):
+  def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0, dilation=1, activation=nn.LeakyReLU(0.2, inplace=True)):
     super(GatedConv, self).__init__()
     self.activation = activation
     if out_channels == 3 or activation is None:
@@ -98,14 +98,14 @@ class GatedConv(torch.nn.Module):
 
 
 class GatedDeConv(torch.nn.Module):
-  def __init__(self, in_channels, out_channels, kernel_size, scale_factor=2, stride=1, padding=0, dilation=1, 
+  def __init__(self, in_channels, out_channels, kernel_size, stride=1, scale_factor=2, padding=0, dilation=1, 
                activation=torch.nn.LeakyReLU(0.2, inplace=True)):
     super(GatedDeConv, self).__init__()
     self.conv2d = GatedConv(in_channels, out_channels, kernel_size, stride, padding, dilation, activation)
     self.scale_factor = scale_factor
 
-  def forward(self, input):
-    x = F.interpolate(input, scale_factor=self.scale_factor)
+  def forward(self, x):
+    x = F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=True)
     return self.conv2d(x)
 
 
