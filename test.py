@@ -74,7 +74,7 @@ def main_worker(gpu, ngpus_per_node, config):
     images, masks = set_device([images, masks])
     images_masked = images*(1-masks) + masks
     with torch.no_grad():
-      _, output = model(torch.cat((images_masked, masks), dim=1), masks)
+      _, output = model(images_masked, masks)
     orig_imgs = postprocess(images)
     mask_imgs = postprocess(images_masked)
     comp_imgs = postprocess((1-masks)*images+masks*output)
