@@ -256,7 +256,7 @@ class InpaintGenerator(nn.Module):
     )
 
     self.refine_decoder = nn.Sequential(
-      GatedConv(8*cnum, 4*cnum, 3, 1, padding=1),
+      GatedConv(4*cnum, 4*cnum, 3, 1, padding=1),
       GatedConv(2*cnum, 4*cnum, 3, 1, padding=1),
       GatedDeConv(2*cnum, 2*cnum, 3, 1, padding=1),
       GatedConv(cnum, 2*cnum, 3, 1, padding=1),
