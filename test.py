@@ -39,7 +39,7 @@ from core.dataset import Dataset
 parser = argparse.ArgumentParser(description="MGP")
 parser.add_argument("-c", "--config", type=str, required=True)
 parser.add_argument("-l", "--level",  type=int, required=True)
-parser.add_argument("-n", "--model_name", type=str, required=True)
+parser.add_argument("-n", "--model_name", type=str, default='gatedconv')
 parser.add_argument('-s', '--size', default=512, type=int)
 parser.add_argument("-p", "--port", type=str, default="23451")
 args = parser.parse_args()
