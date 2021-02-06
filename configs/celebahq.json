@@ -3,7 +3,7 @@
     "save_dir": "release_model/",
     "data_loader": {
         "name": "celebahq", 
-        "zip_root": "../datazip",
+        "zip_root": "../../data",
         "flist_root": "../flist",
         "mask": "pconv",
         "extend": 5,
