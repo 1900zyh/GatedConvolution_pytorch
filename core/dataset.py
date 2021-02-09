@@ -23,14 +23,13 @@ class Dataset(torch.utils.data.Dataset):
     self.w, self.h = data_args['w'], data_args['h']
     self.data = [os.path.join(data_args['zip_root'], data_args['name'], i) 
       for i in np.genfromtxt(os.path.join(data_args['flist_root'], data_args['name'], split+'.flist'), dtype=np.str, encoding='utf-8')]
+    self.data.sort()
+
     self.mask_type = data_args.get('mask', 'pconv')
     if self.mask_type == 'pconv':
-      self.mask = [os.path.join(data_args['zip_root'], 'mask/{}.png'.format(str(i).zfill(5))) for i in range(2000, 12000)]
-      # self.mask = [os.path.join(data_args['zip_root'], 'mask/{}.png'.format(str(i).zfill(5))) for i in range(self.level*2000, (self.level+1)*2000)]
-      self.mask = self.mask*(max(1, math.ceil(len(self.data)/len(self.mask))))
+      self.mask = [os.path.join(data_args['zip_root'], 'mask/{}.png'.format(str(i).zfill(5))) for i in range(self.level*2000, (self.level+1)*2000)]
     else:
       self.mask = [0]*len(self.data)
-    self.data.sort()
     
     if split == 'train':
       self.data = self.data*data_args['extend']
@@ -61,10 +60,9 @@ class Dataset(torch.utils.data.Dataset):
     # load mask 
     if self.mask_type == 'pconv':
       m_index = random.randint(0, len(self.mask)-1) if self.split == 'train' else index
+      m_index %= 2000 
       mask_path = os.path.dirname(self.mask[m_index]) + '.zip'
       mask_name = os.path.basename(self.mask[m_index])
-      if self.split != 'train':
-        mask_name = '{}.png'.format(str(index%2000 + self.level*2000).zfill(5))
       mask = ZipReader.imread(mask_path, mask_name).convert('L')
     else:
       m = np.zeros((self.h, self.w)).astype(np.uint8)

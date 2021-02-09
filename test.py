@@ -34,6 +34,7 @@ import glob
 from core.utils import set_device, postprocess, ZipReader, set_seed
 from core.utils import postprocess
 from core.dataset import Dataset
+from tqdm import tqdm 
  
 
 parser = argparse.ArgumentParser(description="MGP")
@@ -68,9 +69,9 @@ def main_worker(gpu, ngpus_per_node, config):
   path = os.path.join(config['save_dir'], 'results_{}_level_{}'.format(str(latest_epoch).zfill(5), str(args.level).zfill(2)))
   os.makedirs(path, exist_ok=True)
   # iteration through datasets
-  for idx, (images, masks, names) in enumerate(dataloader):
-    print('[{}] GPU{} {}/{}: {}'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-      gpu, idx, len(dataloader), names[0]))
+  for images, masks, names in tqdm(dataloader):
+    # print('[{}] GPU{} {}/{}: {}'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    #   gpu, idx, len(dataloader), names[0]))
     images, masks = set_device([images, masks])
     images_masked = images*(1-masks) + masks
     with torch.no_grad():

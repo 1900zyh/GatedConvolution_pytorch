@@ -1,3 +1,5 @@
 release_model
 __pycache__
 *.log
+results
+*.sh
